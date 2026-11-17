@@ -12,8 +12,7 @@ import {
   set,
   get,
   update,
-  onValue,
-  remove
+  onValue
 } from "https://www.gstatic.com/firebasejs/10.13.1/firebase-database.js";
 
 // 1. Your Firebase Configuration
@@ -31,7 +30,7 @@ const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getDatabase(app);
 
-// 2. Bible "Guess Their Answer" Question Bank (6 Top Answers per Prompt)
+// 2. Bible "Guess Their Answer" Question Bank
 const BIBLE_QUESTIONS = [
   {
     prompt: "Name a Fruit of the Spirit mentioned in Galatians 5",
@@ -105,13 +104,13 @@ const BIBLE_QUESTIONS = [
 let currentUser = null;
 let myProfile = { name: "Player", photo: "", avatar: "david", wins: 0, points: 0 };
 let activeRoomCode = null;
-let myRole = "p1"; // 'p1' or 'p2'
+let myRole = "p1";
 let isBotMatch = false;
+let isLocalOfflineBot = false;
 let roomUnsubscribe = null;
 let roundTimerInterval = null;
 let botGuessTimeout = null;
 
-// Local Round State
 let matchQuestions = [];
 let currentRound = 1;
 let timeLeft = 25;
@@ -119,7 +118,7 @@ let p1Score = 0;
 let p2Score = 0;
 let unlockedSlots = {};
 
-// 4. DOM Elements
+// 4. DOM Helpers
 const screens = {
   auth: document.getElementById("auth-screen"),
   lobby: document.getElementById("lobby-screen"),
@@ -136,12 +135,18 @@ function setStatus(msg) {
   document.getElementById("status-text").textContent = msg;
 }
 
-// 5. Authentication & Profile Loading
+// 5. Authentication & Immediate Lobby Entry
 document.getElementById("google-login-btn").addEventListener("click", async () => {
+  const btn = document.getElementById("google-login-btn");
   try {
+    btn.textContent = "Signing in...";
     const provider = new GoogleAuthProvider();
-    await signInWithPopup(auth, provider);
+    const result = await signInWithPopup(auth, provider);
+    if (result && result.user) {
+      await handleUserLogin(result.user);
+    }
   } catch (err) {
+    btn.textContent = "Sign in with Google";
     alert("Google Sign-In Error: " + err.message);
   }
 });
@@ -153,34 +158,51 @@ document.getElementById("logout-btn").addEventListener("click", () => {
 onAuthStateChanged(auth, async (user) => {
   if (!user) {
     currentUser = null;
+    const btn = document.getElementById("google-login-btn");
+    if (btn) btn.textContent = "Sign in with Google";
     showScreen("auth");
     return;
   }
+  await handleUserLogin(user);
+});
 
+async function handleUserLogin(user) {
   currentUser = user;
-  const userRef = ref(db, `users/${user.uid}`);
-  const snap = await get(userRef);
 
-  if (snap.exists()) {
-    myProfile = snap.val();
-  } else {
-    myProfile = {
-      name: user.displayName || "Bible Scholar",
-      photo: user.photoURL || "https://ui-avatars.com/api/?name=Player&background=f59e0b&color=0f172a",
-      avatar: "david",
-      wins: 0,
-      points: 0
-    };
-    await set(userRef, myProfile);
-  }
+  // Set default profile and enter Lobby IMMEDIATELY so the screen never gets stuck
+  myProfile = {
+    name: user.displayName || "Bible Scholar",
+    photo: user.photoURL || "https://ui-avatars.com/api/?name=Player&background=f59e0b&color=0f172a",
+    avatar: myProfile.avatar || "david",
+    wins: myProfile.wins || 0,
+    points: myProfile.points || 0
+  };
 
   updateLobbyUI();
   showScreen("lobby");
+
   if (window.Arena3D) {
     window.Arena3D.resetMatch();
     window.Arena3D.setAvatars(myProfile.avatar, "moses");
   }
-});
+
+  // Sync saved stats from Realtime Database in the background
+  try {
+    const userRef = ref(db, `users/${user.uid}`);
+    const snap = await get(userRef);
+    if (snap.exists()) {
+      myProfile = { ...myProfile, ...snap.val() };
+      updateLobbyUI();
+      if (window.Arena3D) {
+        window.Arena3D.setAvatars(myProfile.avatar, "moses");
+      }
+    } else {
+      await set(userRef, myProfile);
+    }
+  } catch (dbErr) {
+    console.warn("Database sync note:", dbErr.message);
+  }
+}
 
 function updateLobbyUI() {
   document.getElementById("user-name").textContent = myProfile.name;
@@ -204,7 +226,9 @@ document.querySelectorAll(".avatar-btn").forEach(btn => {
       window.Arena3D.setAvatars(chosen, "moses");
     }
     if (currentUser) {
-      await update(ref(db, `users/${currentUser.uid}`), { avatar: chosen });
+      try {
+        await update(ref(db, `users/${currentUser.uid}`), { avatar: chosen });
+      } catch (_) {}
     }
   });
 });
@@ -213,7 +237,6 @@ document.querySelectorAll(".avatar-btn").forEach(btn => {
 document.getElementById("create-room-btn").addEventListener("click", async () => {
   const code = Math.floor(1000 + Math.random() * 9000).toString();
   await createFirebaseRoom(code, false);
-  setStatus(`Room Created! Share 4-Digit Code: ${code} (Waiting for friend...)`);
 });
 
 document.getElementById("join-room-btn").addEventListener("click", async () => {
@@ -227,36 +250,57 @@ document.getElementById("join-room-btn").addEventListener("click", async () => {
 
 document.getElementById("quick-match-btn").addEventListener("click", async () => {
   setStatus("Searching for an online opponent...");
-  const roomsSnap = await get(ref(db, "rooms"));
-  let foundRoomCode = null;
+  try {
+    const roomsSnap = await get(ref(db, "rooms"));
+    let foundRoomCode = null;
 
-  if (roomsSnap.exists()) {
-    const rooms = roomsSnap.val();
-    for (const [code, data] of Object.entries(rooms)) {
-      if (data.status === "waiting" && data.p1?.uid !== currentUser.uid) {
-        foundRoomCode = code;
-        break;
+    if (roomsSnap.exists()) {
+      const rooms = roomsSnap.val();
+      for (const [code, data] of Object.entries(rooms)) {
+        if (data.status === "waiting" && data.p1?.uid !== currentUser.uid) {
+          foundRoomCode = code;
+          break;
+        }
       }
     }
-  }
 
-  if (foundRoomCode) {
-    await joinFirebaseRoom(foundRoomCode);
-  } else {
-    const code = Math.floor(1000 + Math.random() * 9000).toString();
-    await createFirebaseRoom(code, true);
+    if (foundRoomCode) {
+      await joinFirebaseRoom(foundRoomCode);
+    } else {
+      const code = Math.floor(1000 + Math.random() * 9000).toString();
+      await createFirebaseRoom(code, true);
+    }
+  } catch (err) {
+    // Fallback to immediate Bot Match if database rules are still being set up
+    startOfflineBotMatch();
   }
 });
+
+function startOfflineBotMatch() {
+  cleanupListeners();
+  isBotMatch = true;
+  isLocalOfflineBot = true;
+  myRole = "p1";
+  p1Score = 0;
+  p2Score = 0;
+  const qIndices = [0, 1, 2, 3, 4, 5].sort(() => Math.random() - 0.5).slice(0, 3);
+  startMatchUI({
+    round: 1,
+    qIndices,
+    p1: { name: myProfile.name, avatar: myProfile.avatar, score: 0 },
+    p2: { name: "Scholar Ezra (Bot)", avatar: "paul", score: 0 },
+    unlocked: {}
+  });
+}
 
 async function createFirebaseRoom(code, allowBotFallback) {
   cleanupListeners();
   activeRoomCode = code;
   myRole = "p1";
   isBotMatch = false;
+  isLocalOfflineBot = false;
 
-  // Pick 3 random Bible questions
   const qIndices = [0, 1, 2, 3, 4, 5].sort(() => Math.random() - 0.5).slice(0, 3);
-
   const roomData = {
     status: "waiting",
     round: 1,
@@ -266,50 +310,69 @@ async function createFirebaseRoom(code, allowBotFallback) {
     unlocked: {}
   };
 
-  await set(ref(db, `rooms/${code}`), roomData);
-  listenToRoom(code);
+  try {
+    await set(ref(db, `rooms/${code}`), roomData);
+    if (!allowBotFallback) {
+      setStatus(`Room Created! Share 4-Digit Code: ${code} (Waiting for friend...)`);
+    }
+    listenToRoom(code);
 
-  if (allowBotFallback) {
-    setTimeout(async () => {
-      const snap = await get(ref(db, `rooms/${code}`));
-      if (snap.exists() && snap.val().status === "waiting") {
-        // Start vs Biblical Scholar Bot so player never waits long
-        isBotMatch = true;
-        await update(ref(db, `rooms/${code}`), {
-          status: "playing",
-          p2: { uid: "bot", name: "Scholar Ezra (Bot)", avatar: "paul", score: 0 }
-        });
-      }
-    }, 6000);
+    if (allowBotFallback) {
+      setTimeout(async () => {
+        try {
+          const snap = await get(ref(db, `rooms/${code}`));
+          if (snap.exists() && snap.val().status === "waiting") {
+            isBotMatch = true;
+            await update(ref(db, `rooms/${code}`), {
+              status: "playing",
+              p2: { uid: "bot", name: "Scholar Ezra (Bot)", avatar: "paul", score: 0 }
+            });
+          }
+        } catch (_) {
+          startOfflineBotMatch();
+        }
+      }, 5000);
+    }
+  } catch (err) {
+    if (allowBotFallback) {
+      startOfflineBotMatch();
+    } else {
+      setStatus("Publish Realtime Database Rules in Firebase Console to use Friend Rooms!");
+    }
   }
 }
 
 async function joinFirebaseRoom(code) {
-  const roomRef = ref(db, `rooms/${code}`);
-  const snap = await get(roomRef);
+  try {
+    const roomRef = ref(db, `rooms/${code}`);
+    const snap = await get(roomRef);
 
-  if (!snap.exists()) {
-    setStatus("Room not found. Check the 4-digit code!");
-    return;
+    if (!snap.exists()) {
+      setStatus("Room not found. Check the 4-digit code!");
+      return;
+    }
+
+    const data = snap.val();
+    if (data.status !== "waiting") {
+      setStatus("That room is already full!");
+      return;
+    }
+
+    cleanupListeners();
+    activeRoomCode = code;
+    myRole = "p2";
+    isBotMatch = false;
+    isLocalOfflineBot = false;
+
+    await update(roomRef, {
+      status: "playing",
+      p2: { uid: currentUser.uid, name: myProfile.name, avatar: myProfile.avatar, score: 0 }
+    });
+
+    listenToRoom(code);
+  } catch (err) {
+    setStatus("Database permission error: check Firebase Realtime Database Rules.");
   }
-
-  const data = snap.val();
-  if (data.status !== "waiting") {
-    setStatus("That room is already full!");
-    return;
-  }
-
-  cleanupListeners();
-  activeRoomCode = code;
-  myRole = "p2";
-  isBotMatch = false;
-
-  await update(roomRef, {
-    status: "playing",
-    p2: { uid: currentUser.uid, name: myProfile.name, avatar: myProfile.avatar, score: 0 }
-  });
-
-  listenToRoom(code);
 }
 
 function listenToRoom(code) {
@@ -334,9 +397,13 @@ function startMatchUI(data) {
   matchQuestions = (data.qIndices || [0, 1, 2]).map(i => BIBLE_QUESTIONS[i]);
   currentRound = data.round || 1;
   unlockedSlots = data.unlocked || {};
+  p1Score = data.p1?.score || 0;
+  p2Score = data.p2?.score || 0;
 
   document.getElementById("p1-name").textContent = data.p1.name;
   document.getElementById("p2-name").textContent = data.p2 ? data.p2.name : "Opponent";
+  document.getElementById("p1-score").textContent = p1Score;
+  document.getElementById("p2-score").textContent = p2Score;
 
   if (window.Arena3D) {
     window.Arena3D.resetMatch();
@@ -361,7 +428,6 @@ function loadRound(roundNum) {
 
   renderAnswerBoard(qObj, isFinale);
   document.getElementById("guess-input").value = "";
-  document.getElementById("guess-input").focus();
 
   clearInterval(roundTimerInterval);
   roundTimerInterval = setInterval(() => {
@@ -434,9 +500,9 @@ document.getElementById("guess-form").addEventListener("submit", async (e) => {
   let matchedIndex = -1;
   qObj.answers.forEach((ans, idx) => {
     const slotKey = `r${currentRound}_s${idx}`;
-    if (unlockedSlots[slotKey]) return; // Already unlocked
+    if (unlockedSlots[slotKey]) return;
 
-    const hit = ans.keys.some(k => rawGuess.includes(k) || k.includes(rawGuess) && rawGuess.length >= 3);
+    const hit = ans.keys.some(k => rawGuess.includes(k) || (k.includes(rawGuess) && rawGuess.length >= 3));
     if (hit && matchedIndex === -1) {
       matchedIndex = idx;
     }
@@ -447,12 +513,23 @@ document.getElementById("guess-form").addEventListener("submit", async (e) => {
     const earned = isFinale ? qObj.answers[matchedIndex].points * 2 : qObj.answers[matchedIndex].points;
 
     unlockedSlots[slotKey] = myRole;
-    const newScore = (myRole === "p1" ? p1Score : p2Score) + earned;
+    if (myRole === "p1") p1Score += earned;
+    else p2Score += earned;
 
-    const updates = {};
-    updates[`${myRole}/score`] = newScore;
-    updates[`unlocked/${slotKey}`] = myRole;
-    await update(ref(db, `rooms/${activeRoomCode}`), updates);
+    syncLiveGameState({
+      p1: { score: p1Score },
+      p2: { score: p2Score },
+      unlocked: unlockedSlots
+    });
+
+    if (!isLocalOfflineBot && activeRoomCode) {
+      try {
+        const updates = {};
+        updates[`${myRole}/score`] = myRole === "p1" ? p1Score : p2Score;
+        updates[`unlocked/${slotKey}`] = myRole;
+        await update(ref(db, `rooms/${activeRoomCode}`), updates);
+      } catch (_) {}
+    }
   }
 });
 
@@ -476,10 +553,23 @@ function scheduleBotGuess() {
       const slotKey = `r${currentRound}_s${pick.idx}`;
       const pts = currentRound === 3 ? pick.ans.points * 2 : pick.ans.points;
 
-      const updates = {};
-      updates["p2/score"] = p2Score + pts;
-      updates[`unlocked/${slotKey}`] = "p2";
-      await update(ref(db, `rooms/${activeRoomCode}`), updates);
+      unlockedSlots[slotKey] = "p2";
+      p2Score += pts;
+
+      syncLiveGameState({
+        p1: { score: p1Score },
+        p2: { score: p2Score },
+        unlocked: unlockedSlots
+      });
+
+      if (!isLocalOfflineBot && activeRoomCode) {
+        try {
+          const updates = {};
+          updates["p2/score"] = p2Score;
+          updates[`unlocked/${slotKey}`] = "p2";
+          await update(ref(db, `rooms/${activeRoomCode}`), updates);
+        } catch (_) {}
+      }
     }
 
     scheduleBotGuess();
@@ -492,8 +582,10 @@ async function advanceNextRoundOrFinish() {
 
   if (currentRound < 3) {
     const nextRound = currentRound + 1;
-    if (myRole === "p1") {
-      await update(ref(db, `rooms/${activeRoomCode}`), { round: nextRound, unlocked: {} });
+    if (!isLocalOfflineBot && myRole === "p1" && activeRoomCode) {
+      try {
+        await update(ref(db, `rooms/${activeRoomCode}`), { round: nextRound, unlocked: {} });
+      } catch (_) {}
     }
     loadRound(nextRound);
   } else {
@@ -509,7 +601,6 @@ async function finishMatch() {
   else if (p2Score > p1Score) winnerSide = "p2";
 
   if (window.Arena3D) {
-    // Winner celebrates with confetti; runner-up bows head gently on their pillar
     window.Arena3D.showMatchResult(winnerSide);
   }
 
@@ -531,18 +622,19 @@ async function finishMatch() {
     subEl.textContent = `Final Score: ${myFinalScore} to ${oppFinalScore} pts. Try another match!`;
   }
 
-  // Save points & win to Firebase Profile
+  myProfile.points = (myProfile.points || 0) + myFinalScore;
+  if (didIWin) myProfile.wins = (myProfile.wins || 0) + 1;
+  updateLobbyUI();
+
   if (currentUser) {
-    myProfile.points = (myProfile.points || 0) + myFinalScore;
-    if (didIWin) myProfile.wins = (myProfile.wins || 0) + 1;
-    await update(ref(db, `users/${currentUser.uid}`), {
-      points: myProfile.points,
-      wins: myProfile.wins
-    });
-    updateLobbyUI();
+    try {
+      await update(ref(db, `users/${currentUser.uid}`), {
+        points: myProfile.points,
+        wins: myProfile.wins
+      });
+    } catch (_) {}
   }
 
-  // Show result card after 2.5 seconds so player enjoys the 3D celebration/sad animation
   setTimeout(() => {
     showScreen("result");
   }, 2500);
