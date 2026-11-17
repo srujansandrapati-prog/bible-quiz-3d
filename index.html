@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Pillars of Wisdom - 3D Bible Quiz</title>
+  <!-- Load Google Font -->
+  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;700;800&display=swap" rel="stylesheet">
+  <!-- Load our visual styles -->
+  <link rel="stylesheet" href="style.css" />
+  <!-- Load Three.js for the 3D Arena (No download needed) -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+</head>
+<body>
+
+  <!-- 1. Google Sign-In Screen -->
+  <div id="auth-screen" class="screen active">
+    <div class="glass-card">
+      <div class="badge">3D MULTIPLAYER BIBLE SHOWDOWN</div>
+      <h1>Pillars of Wisdom</h1>
+      <p class="subtitle">Guess the top Biblical answers, raise your golden pillar, and play live with friends!</p>
+      <button id="google-login-btn" class="primary-btn">
+        Sign in with Google
+      </button>
+    </div>
+  </div>
+
+  <!-- 2. Lobby & 3D Character Picker Screen -->
+  <div id="lobby-screen" class="screen">
+    <div class="top-bar">
+      <div class="user-Chip">
+        <img id="user-photo" src="" alt="Profile" />
+        <span id="user-name">Player</span>
+      </div>
+      <div class="stats-pill">Wins: <strong id="user-wins">0</strong> | Points: <strong id="user-points">0</strong></div>
+      <button id="logout-btn" class="small-btn">Sign Out</button>
+    </div>
+
+    <div class="lobby-panel glass-card">
+      <h3>Choose Your 3D Biblical Character</h3>
+      <div class="avatar-row">
+        <button class="avatar-btn selected" data-avatar="david">Shepherd David</button>
+        <button class="avatar-btn" data-avatar="moses">Prophet Moses</button>
+        <button class="avatar-btn" data-avatar="esther">Queen Esther</button>
+        <button class="avatar-btn" data-avatar="paul">Apostle Paul</button>
+        <button class="avatar-btn" data-avatar="knight">Armor Knight</button>
+      </div>
+
+      <div class="mode-buttons">
+        <button id="quick-match-btn" class="primary-btn">Play Quick 1v1 Match</button>
+        <div class="room-box">
+          <button id="create-room-btn" class="secondary-btn">Create Friend Room</button>
+          <input id="room-code-input" type="text" maxlength="4" placeholder="Enter 4-Digit Code" />
+          <button id="join-room-btn" class="secondary-btn">Join</button>
+        </div>
+      </div>
+
+      <p id="status-text" class="status-msg"></p>
+    </div>
+  </div>
+
+  <!-- 3. Live 3-Round Game Screen -->
+  <div id="game-screen" class="screen">
+    <div class="hud-header">
+      <div class="score-box p1-box">
+        <span id="p1-name">You</span>
+        <strong id="p1-score">0</strong>
+      </div>
+
+      <div class="round-timer-box">
+        <div id="round-label">ROUND 1 OF 3</div>
+        <div id="timer-display">25</div>
+      </div>
+
+      <div class="score-box p2-box">
+        <span id="p2-name">Opponent</span>
+        <strong id="p2-score">0</strong>
+      </div>
+    </div>
+
+    <!-- Center 3D Tablet Question & 6 Hidden Answers -->
+    <div class="board-container">
+      <div id="question-banner">Loading Bible question...</div>
+      <div id="answers-grid" class="answers-grid"></div>
+    </div>
+
+    <!-- Bottom Typing Box -->
+    <form id="guess-form" class="guess-bar" autocomplete="off">
+      <input id="guess-input" type="text" placeholder="Type your Bible answer here..." />
+      <button type="submit" class="primary-btn">Submit</button>
+    </form>
+  </div>
+
+  <!-- 4. Match Result Overlay -->
+  <div id="result-screen" class="screen">
+    <div class="glass-card result-card">
+      <h2 id="result-title">Match Complete!</h2>
+      <p id="result-subtitle"></p>
+      <button id="back-lobby-btn" class="primary-btn">Back to Lobby</button>
+    </div>
+  </div>
+
+  <!-- Load 3D Scene & Game Logic -->
+  <script src="arena3d.js"></script>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
